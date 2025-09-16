@@ -111,11 +111,12 @@ impl<B: Buf> MaybeFlip<B> {
 
     def_method!(get_u128, u128);
 
-    fn copy_to_slice(&mut self, dst: &mut [u8]) {
-        self.input.copy_to_slice(dst);
+    fn copy_to_slice(&mut self, dst: &mut [u8]) -> Result<()> {
+        self.input.try_copy_to_slice(dst).map_err(|_| Error::Eof)?;
         if self.flip {
             dst.iter_mut().for_each(|x| *x = !*x);
         }
+        Ok(())
     }
 
     fn is_empty(&self) -> bool {
@@ -133,7 +134,7 @@ impl<B: Buf> Deserializer<B> {
         let mut bytes = vec![];
         let mut chunk = [0u8; BYTES_CHUNK_UNIT_SIZE]; // chunk + chunk_len
         loop {
-            self.input.copy_to_slice(&mut chunk);
+            self.input.copy_to_slice(&mut chunk)?;
             match chunk[8] {
                 len @ 1..=8 => {
                     bytes.extend_from_slice(&chunk[..len as usize]);
