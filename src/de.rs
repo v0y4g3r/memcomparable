@@ -126,10 +126,13 @@ impl<B: Buf> MaybeFlip<B> {
 
 impl<B: Buf> Deserializer<B> {
     fn read_bytes(&mut self) -> Result<Vec<u8>> {
+        if self.read_bytes_is_empty()? {
+            return Ok(vec![]);
+        }
         // A small initial capacity avoids repeated reallocation while chunking:
         // starting from an empty vec, a 24-byte value reallocates 0→8→16→32.
         let mut bytes = Vec::with_capacity(32);
-        self.read_bytes_into(&mut bytes)?;
+        self.read_bytes_chunks_into(&mut bytes)?;
         Ok(bytes)
     }
 
@@ -141,11 +144,24 @@ impl<B: Buf> Deserializer<B> {
     /// decoding many byte arrays.
     pub fn read_bytes_into(&mut self, buffer: &mut Vec<u8>) -> Result<usize> {
         buffer.clear();
-        match self.input.get_u8() {
-            0 => return Ok(0), // empty slice
-            1 => {}            // non-empty slice
-            v => return Err(Error::InvalidBytesEncoding(v)),
+        if self.read_bytes_is_empty()? {
+            return Ok(0);
         }
+        self.read_bytes_chunks_into(buffer)
+    }
+
+    fn read_bytes_is_empty(&mut self) -> Result<bool> {
+        if self.input.is_empty() {
+            return Err(Error::Eof);
+        }
+        match self.input.get_u8() {
+            0 => Ok(true),
+            1 => Ok(false),
+            v => Err(Error::InvalidBytesEncoding(v)),
+        }
+    }
+
+    fn read_bytes_chunks_into(&mut self, buffer: &mut Vec<u8>) -> Result<usize> {
         let mut chunk = [0u8; BYTES_CHUNK_UNIT_SIZE]; // chunk + chunk_len
         loop {
             self.input.copy_to_slice(&mut chunk)?;
@@ -771,8 +787,9 @@ mod tests {
 
     #[test]
     fn test_read_bytes_into() {
+        let lengths = [0, 1, 3, 8, 9, 24, 64, 100, 3, 0, 24];
         let mut encoded = vec![];
-        for len in [0, 1, 3, 8, 9, 24, 64, 100] {
+        for len in lengths {
             let s = "x".repeat(len);
             encoded.extend_from_slice(&crate::to_vec(&s).unwrap());
         }
@@ -782,16 +799,19 @@ mod tests {
         // A non-empty marker without a full chunk.
         let truncated = [1, b'a'];
 
-        let mut buffer = Vec::new();
+        let mut buffer = Vec::with_capacity(128);
+        buffer.extend_from_slice(b"previous value");
+        let capacity = buffer.capacity();
         let mut de = Deserializer::new(encoded.as_slice());
-        for len in [0, 1, 3, 8, 9, 24, 64, 100] {
+        for len in lengths {
             let n = de.read_bytes_into(&mut buffer).unwrap();
             assert_eq!(n, len);
             assert_eq!(buffer, "x".repeat(len).as_bytes());
-            // The buffer must have been cleared before each read.
-            assert_eq!(buffer.len(), len);
+            assert_eq!(buffer.capacity(), capacity);
         }
         assert!(!de.has_remaining());
+        assert_eq!(de.read_bytes_into(&mut buffer), Err(Error::Eof));
+        assert!(buffer.is_empty());
 
         let mut de = Deserializer::new(&invalid_chunk_len[..]);
         assert_eq!(
@@ -806,6 +826,38 @@ mod tests {
         // Truncated input returns an error instead of panicking.
         let mut de = Deserializer::new(&truncated[..]);
         assert_eq!(de.read_bytes_into(&mut buffer), Err(Error::Eof));
+    }
+
+    #[test]
+    fn test_truncated_byte_arrays_return_eof() {
+        for reverse in [false, true] {
+            let mut encoded = crate::to_vec(&"123456789").unwrap();
+            if reverse {
+                encoded.iter_mut().for_each(|byte| *byte = !*byte);
+            }
+            // Include the missing initial marker and truncation in either chunk.
+            for end in 0..encoded.len() {
+                let mut de = Deserializer::new(&encoded[..end]);
+                de.set_reverse(reverse);
+                assert_eq!(String::deserialize(&mut de), Err(Error::Eof));
+
+                let mut de = Deserializer::new(&encoded[..end]);
+                de.set_reverse(reverse);
+                assert_eq!(de.read_bytes_into(&mut Vec::new()), Err(Error::Eof));
+            }
+        }
+    }
+
+    #[test]
+    fn test_empty_string_has_zero_capacity() {
+        for (reverse, marker) in [(false, 0), (true, 0xff)] {
+            let encoded = [marker];
+            let mut de = Deserializer::new(&encoded[..]);
+            de.set_reverse(reverse);
+            let decoded = String::deserialize(&mut de).unwrap();
+            assert!(decoded.is_empty());
+            assert_eq!(decoded.capacity(), 0);
+        }
     }
 
     #[test]

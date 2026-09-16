@@ -58,9 +58,10 @@ fn bytes(c: &mut Criterion) {
 
     for size in [10, 100, 1000] {
         let bytes = (0..size).map(|_| rand::random::<u8>()).collect::<Vec<_>>();
+        let encoded_len = 1 + bytes.chunks(8).len() * 9;
         group.bench_function(format!("size-{}", size), |b| {
             b.iter(|| {
-                let mut s = Serializer::new(Vec::with_capacity(size / 8 * 9));
+                let mut s = Serializer::new(Vec::with_capacity(encoded_len));
                 s.serialize_bytes(&bytes).unwrap();
                 black_box(s);
             });
@@ -68,7 +69,7 @@ fn bytes(c: &mut Criterion) {
 
         group.bench_function(format!("size-{}-reverse", size), |b| {
             b.iter(|| {
-                let mut s = Serializer::new(Vec::with_capacity(size / 8 * 9));
+                let mut s = Serializer::new(Vec::with_capacity(encoded_len));
                 s.set_reverse(true);
                 s.serialize_bytes(&bytes).unwrap();
                 black_box(s);
