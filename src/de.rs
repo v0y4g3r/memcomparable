@@ -126,21 +126,35 @@ impl<B: Buf> MaybeFlip<B> {
 
 impl<B: Buf> Deserializer<B> {
     fn read_bytes(&mut self) -> Result<Vec<u8>> {
+        // A small initial capacity avoids repeated reallocation while chunking:
+        // starting from an empty vec, a 24-byte value reallocates 0→8→16→32.
+        let mut bytes = Vec::with_capacity(32);
+        self.read_bytes_into(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Reads the next byte array into `buffer` and returns its length.
+    ///
+    /// The buffer is cleared first, then its capacity is reused and grows as
+    /// needed, so repeated calls with the same buffer allocate at most a few
+    /// times in total. Prefer this over allocating a fresh vec per value when
+    /// decoding many byte arrays.
+    pub fn read_bytes_into(&mut self, buffer: &mut Vec<u8>) -> Result<usize> {
+        buffer.clear();
         match self.input.get_u8() {
-            0 => return Ok(vec![]), // empty slice
-            1 => {}                 // non-empty slice
+            0 => return Ok(0), // empty slice
+            1 => {}            // non-empty slice
             v => return Err(Error::InvalidBytesEncoding(v)),
         }
-        let mut bytes = vec![];
         let mut chunk = [0u8; BYTES_CHUNK_UNIT_SIZE]; // chunk + chunk_len
         loop {
             self.input.copy_to_slice(&mut chunk)?;
             match chunk[8] {
                 len @ 1..=8 => {
-                    bytes.extend_from_slice(&chunk[..len as usize]);
-                    return Ok(bytes);
+                    buffer.extend_from_slice(&chunk[..len as usize]);
+                    return Ok(buffer.len());
                 }
-                9 => bytes.extend_from_slice(&chunk[..8]),
+                9 => buffer.extend_from_slice(&chunk[..8]),
                 v => return Err(Error::InvalidBytesEncoding(v)),
             }
         }
@@ -753,6 +767,63 @@ mod tests {
             from_slice::<String>(&[2]),
             Err(Error::InvalidBytesEncoding(2))
         );
+    }
+
+    #[test]
+    fn test_read_bytes_into() {
+        let mut encoded = vec![];
+        for len in [0, 1, 3, 8, 9, 24, 64, 100] {
+            let s = "x".repeat(len);
+            encoded.extend_from_slice(&crate::to_vec(&s).unwrap());
+        }
+        // An invalid chunk length marker and an invalid non-empty marker.
+        let invalid_chunk_len = [1, b'a', 0, 0, 0, 0, 0, 0, 0, 10];
+        let invalid_nonempty_marker = [2];
+        // A non-empty marker without a full chunk.
+        let truncated = [1, b'a'];
+
+        let mut buffer = Vec::new();
+        let mut de = Deserializer::new(encoded.as_slice());
+        for len in [0, 1, 3, 8, 9, 24, 64, 100] {
+            let n = de.read_bytes_into(&mut buffer).unwrap();
+            assert_eq!(n, len);
+            assert_eq!(buffer, "x".repeat(len).as_bytes());
+            // The buffer must have been cleared before each read.
+            assert_eq!(buffer.len(), len);
+        }
+        assert!(!de.has_remaining());
+
+        let mut de = Deserializer::new(&invalid_chunk_len[..]);
+        assert_eq!(
+            de.read_bytes_into(&mut buffer),
+            Err(Error::InvalidBytesEncoding(10))
+        );
+        let mut de = Deserializer::new(&invalid_nonempty_marker[..]);
+        assert_eq!(
+            de.read_bytes_into(&mut buffer),
+            Err(Error::InvalidBytesEncoding(2))
+        );
+        // Truncated input returns an error instead of panicking.
+        let mut de = Deserializer::new(&truncated[..]);
+        assert_eq!(de.read_bytes_into(&mut buffer), Err(Error::Eof));
+    }
+
+    #[test]
+    fn test_read_bytes_into_reverse() {
+        for len in [0, 1, 8, 9, 24] {
+            let s = "y".repeat(len);
+            let mut ser = crate::Serializer::new(vec![]);
+            ser.set_reverse(true);
+            serde::Serialize::serialize(&s, &mut ser).unwrap();
+            let encoded = ser.into_inner();
+
+            let mut de = Deserializer::new(encoded.as_slice());
+            de.set_reverse(true);
+            let mut buffer = Vec::new();
+            let n = de.read_bytes_into(&mut buffer).unwrap();
+            assert_eq!(n, len);
+            assert_eq!(buffer, s.as_bytes());
+        }
     }
 
     #[test]
