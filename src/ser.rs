@@ -78,40 +78,33 @@ impl<B: BufMut> MaybeFlip<B> {
 
     def_method!(put_u128, u128);
 
+    // Inline both helpers to expose serialize_bytes' 8-byte chunk bounds.
+    #[inline(always)]
     fn put_slice(&mut self, src: &[u8]) {
         if !self.flip {
-            let num_chunks = src.len() / 8;
-            let remainder = src.len() % 8;
-            let mut tmp = [0u8; 8];
-            for chunk in 0..num_chunks {
-                for idx in 0..8 {
-                    tmp[idx] = src[chunk * 8 + idx];
-                }
-                self.output.put_slice(&tmp);
-            }
-            if remainder != 0 {
-                for idx in 0..remainder {
-                    tmp[idx] = src[num_chunks * 8 + idx];
-                }
-                self.output.put_slice(&tmp[0..remainder]);
-            }
+            self.output.put_slice(src);
         } else {
-            let num_chunks = src.len() / 8;
-            let remainder = src.len() % 8;
-            let mut tmp = [0u8; 8];
-            for chunk in 0..num_chunks {
-                for idx in 0..8 {
-                    tmp[idx] = !src[chunk * 8 + idx];
-                }
-                self.output.put_slice(&tmp);
-            }
+            self.put_flipped_slice(src);
+        }
+    }
 
-            if remainder != 0 {
-                for idx in 0..remainder {
-                    tmp[idx] = !src[num_chunks * 8 + idx];
-                }
-                self.output.put_slice(&tmp[0..remainder]);
+    #[inline(always)]
+    fn put_flipped_slice(&mut self, src: &[u8]) {
+        let num_chunks = src.len() / 8;
+        let remainder = src.len() % 8;
+        let mut tmp = [0u8; 8];
+        for chunk in 0..num_chunks {
+            for idx in 0..8 {
+                tmp[idx] = !src[chunk * 8 + idx];
             }
+            self.output.put_slice(&tmp);
+        }
+
+        if remainder != 0 {
+            for idx in 0..remainder {
+                tmp[idx] = !src[num_chunks * 8 + idx];
+            }
+            self.output.put_slice(&tmp[0..remainder]);
         }
     }
 
