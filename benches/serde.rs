@@ -12,13 +12,72 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use memcomparable::Serializer;
+use serde::Serializer as _;
 
-criterion_group!(benches, decimal);
+criterion_group!(benches, decimal, bytes, string_io);
 criterion_main!(benches);
 
 #[cfg(not(feature = "decimal"))]
 fn decimal(_c: &mut Criterion) {}
+
+fn string_io(c: &mut Criterion) {
+    use memcomparable::Deserializer;
+    use serde::{Deserialize, Serialize};
+
+    for len in [8, 24, 64, 256] {
+        let s = "x".repeat(len);
+        let encoded = memcomparable::to_vec(&s).unwrap();
+
+        c.bench_function(format!("serialize_string/{len}").as_str(), |b| {
+            b.iter(|| {
+                let mut ser = Serializer::new(vec![]);
+                s.serialize(&mut ser).unwrap();
+                ser.into_inner()
+            })
+        });
+
+        c.bench_function(format!("deserialize_string/{len}").as_str(), |b| {
+            b.iter(|| String::deserialize(&mut Deserializer::new(encoded.as_slice())).unwrap())
+        });
+
+        c.bench_function(format!("read_bytes_into/{len}").as_str(), |b| {
+            let mut buffer = Vec::new();
+            b.iter(|| {
+                Deserializer::new(encoded.as_slice())
+                    .read_bytes_into(&mut buffer)
+                    .unwrap()
+            })
+        });
+    }
+}
+
+fn bytes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bytes");
+
+    for size in [10, 100, 1000] {
+        let bytes = (0..size).map(|_| rand::random::<u8>()).collect::<Vec<_>>();
+        let encoded_len = 1 + bytes.chunks(8).len() * 9;
+        group.bench_function(format!("size-{}", size), |b| {
+            b.iter(|| {
+                let mut s = Serializer::new(Vec::with_capacity(encoded_len));
+                s.serialize_bytes(&bytes).unwrap();
+                black_box(s);
+            });
+        });
+
+        group.bench_function(format!("size-{}-reverse", size), |b| {
+            b.iter(|| {
+                let mut s = Serializer::new(Vec::with_capacity(encoded_len));
+                s.set_reverse(true);
+                s.serialize_bytes(&bytes).unwrap();
+                black_box(s);
+            });
+        });
+    }
+    group.finish();
+}
 
 #[cfg(feature = "decimal")]
 fn decimal(c: &mut Criterion) {

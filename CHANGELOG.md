@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `Deserializer::read_bytes_into` to decode a byte array into a reusable buffer.
+
+### Changed
+
+- Pre-allocate for short byte arrays in `read_bytes` to avoid repeated reallocation.
+- Bulk-copy byte chunks in `put_slice` for both normal and reverse modes instead of putting byte by byte.
+
+### Fixed
+
+- Return `Error::Eof` instead of panicking when the input is truncated.
+
 ## [0.2.0] - 2023-05-16
 
 ### Changed
